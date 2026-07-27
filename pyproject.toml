@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 自托管 provider 专用。默认不装,CI 不装。
+# Self-hosted provider only. Not installed by default, not installed in CI.
 selfhosted = [
     "torch>=2.4",
     "transformers>=4.44",
@@ -37,9 +37,9 @@ packages = ["gateway", "normalize", "eval"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
-    "live: 打真实 provider API,烧额度。默认跳过,用 `pytest -m live` 手动跑。",
+    "live: hits real provider APIs and burns credits. Skipped by default; run `pytest -m live` by hand.",
 ]
-# 默认跳过 live:CI 和日常开发只跑 FakeProvider。
+# Skip live by default: CI and day-to-day development run FakeProvider only.
 addopts = "-m 'not live'"
 
 [tool.ruff]

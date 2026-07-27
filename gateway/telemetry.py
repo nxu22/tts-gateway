@@ -1,8 +1,10 @@
-"""TTFA / RTF 埋点 → Langfuse。
+"""TTFA / RTF instrumentation, exported to Langfuse.
 
-口径(违反了数字就没意义):
+Measurement rules — break these and the numbers mean nothing:
 
-- TTFA 从「调用方发出请求」计时,不是从「provider 返回 header」计时
-- RTF = 音频时长 / 合成耗时
-- 每条延迟记录必须带上并发数和硬件标识,裸的单请求数字不进报告
+- TTFA is measured from **when the caller issued the request**, not from when the
+  provider returned headers.
+- RTF = audio duration / synthesis wall-clock time.
+- Every latency record carries the concurrency level and a hardware label. A bare
+  single-request number never goes into a report.
 """

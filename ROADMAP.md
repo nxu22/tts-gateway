@@ -12,18 +12,23 @@
 纯样板:`pyproject.toml`(uv)、ruff + pytest 配置、`.env.example`、`.gitignore`、
 docker-compose 占位。所有 `.py` 只放 docstring,不写实现。
 
-## ② 契约 🧭 · ← 当前
+## ② 契约 🧭 · ✅ 完成
 
-只写 `gateway/interface.py` 和 `tests/test_contract.py`。
+`gateway/interface.py` + `gateway/providers/fake.py` + `tests/test_contract.py`。
+23 条断言,全绿。定下来的决定:
 
-- `TTSProvider` ABC、`AudioChunk`、`VoiceSpec`、`StreamStarted`
-- `FakeProvider`:合成正弦波 PCM,可注入延迟和失败点
-- 契约测试参数化,断言:采样率、chunk 序号单调、首 chunk 前必有 `StreamStarted`、
-  取消时干净退出
+- 单一事件流 `StreamStarted → AudioChunk* → StreamEnded`
+- **逻辑音色名**,vendor voice id 只存在于 provider 内部(否则 failover 第一态废掉)
+- 「首 chunk 是否已发出」由 router 记账,provider 只抛类型化异常
+- chunk 大小不进契约,只约束非空 / 偶数字节 / seq 连续
+- `check_health()` **无默认实现**;熔断以被动信号为主,主动探测只用于半开恢复
+- 首个 chunk 必须携带 ≥20ms 真实音频(防 TTFA 抢跑)
+- 异常路径上不许发 `StreamEnded`(否则第二态触发条件废掉)
 
-**这一步是地基。接口签名定错的代价是后面全部返工。**
+推迟:`synthesize` 只收 `str`。LLM token 级串流是后面真正的延迟大头,到时候动接口 ——
+是**新增重载**而不是破坏性改动,可以接受。
 
-## ③ Cartesia provider
+## ③ Cartesia provider · ← 当前
 
 实现 `CartesiaProvider`,目标是通过现有契约测试。先非流式,跑通后再加流式。
 **不许改 `interface.py` 和 `router.py`。**
@@ -53,6 +58,13 @@ docker-compose 占位。所有 `.py` 只放 docstring,不写实现。
 
 选路 + failover 状态机 + 故障注入测试。三态语义见 CLAUDE.md,不要"优化"掉
 「中途不切换」这条。
+
+必做的两道防护:
+
+- **启动校验**:非 dev 环境(`APP_ENV != "dev"`)下 pool 里出现 `fake` 就报错退出。
+  它能被 `TTS_PROVIDER_POOL` 路由到,总有一天会被误配到线上,然后客户听到正弦波。
+- **熔断靠被动信号**:最近 N 次真实请求的失败率,不是定时探测。`check_health()`
+  只用在半开恢复上。
 
 ## ⑨ normalize/
 

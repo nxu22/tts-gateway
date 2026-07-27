@@ -1,8 +1,9 @@
-"""各家 provider 的实现,一家一个文件,互不引用。
+"""Provider implementations: one file per vendor, none importing another.
 
-新增一家的代价必须是:新建一个文件 + 在注册表加一行,不改任何已有文件。
-如果发现要改 `router.py` 才能加,说明接口设计错了 —— 停下来先改接口。
+Adding a vendor must cost exactly one new file plus one registration line, with no
+edits to existing files. If `router.py` has to change to accommodate a provider, the
+interface is wrong — stop and fix the interface first.
 
-原生格式(MP3、Opus、μ-law、44.1kHz)的解码和重采样都在这一层内部完成,
-不允许泄漏到 router 或调用方。
+Decoding and resampling from native formats (MP3, Opus, mu-law, 44.1kHz) happens
+inside this layer. None of it may leak into the router or the caller.
 """

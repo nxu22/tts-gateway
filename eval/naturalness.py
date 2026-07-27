@@ -1,1 +1,1 @@
-"""自然度:UTMOS / NISQA 无参考打分。"""
+"""Naturalness: UTMOS / NISQA reference-free scoring."""

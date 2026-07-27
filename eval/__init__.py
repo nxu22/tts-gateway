@@ -1,4 +1,5 @@
-"""语音质量评测 harness。
+"""Voice quality evaluation harness.
 
-Alex 和模型都听不了音频 —— 所有"好不好听"的判断只能来自这里的量化指标。
+Neither Alex nor the model can listen to the generated audio, so every judgement about
+quality has to come from the quantitative metrics in this package.
 """

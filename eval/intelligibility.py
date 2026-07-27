@@ -1,1 +1,1 @@
-"""可懂度:TTS → ASR → WER。"""
+"""Intelligibility: TTS -> ASR -> WER."""

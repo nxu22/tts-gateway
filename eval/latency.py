@@ -1,4 +1,5 @@
-"""延迟:TTFA / RTF / p50 / p95。
+"""Latency: TTFA / RTF / p50 / p95.
 
-TTFA 从调用方发出请求起算。每组数字都要带并发数和硬件标识。
+TTFA is measured from when the caller issued the request. Every set of numbers carries
+its concurrency level and hardware label.
 """

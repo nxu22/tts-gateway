@@ -130,9 +130,12 @@ uv run uvicorn gateway.main:app --reload
 
 > 每完成一个阶段更新这一节。
 
-**Week 0 —— 契约设计。**
-现在只做 `interface.py` 和 `tests/test_contract.py`,**不写任何真实 provider**。
-接口定错了,后面每周都要返工。
+**Week 1 —— 第一家 provider(Cartesia)。**
+契约已经冻结:`gateway/interface.py`、`gateway/providers/fake.py`、
+`tests/test_contract.py`(23 条断言全绿)。
+
+现在的任务是让 `CartesiaProvider` 通过**现有**契约测试。先非流式,跑通再加流式。
+**不许改 `interface.py` 和 `router.py`** —— 要改就先停下来说明理由。
 
 完整计划见 [ROADMAP.md](./ROADMAP.md)。
 

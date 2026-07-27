@@ -1,4 +1,4 @@
-# secrets —— 只有 .env.example 进仓库
+# secrets — only .env.example is committed
 .env
 .env.*
 !.env.example
@@ -18,7 +18,8 @@ build/
 .coverage
 htmlcov/
 
-# 音频产物:跑分生成的 wav 不进仓库,只留 bench/results/*.md 和 *.json
+# audio artifacts: generated wavs stay out of the repo; only bench/results/*.md
+# and *.json are archived
 *.wav
 *.mp3
 *.flac
