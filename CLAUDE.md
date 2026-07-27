@@ -135,9 +135,12 @@ uv run uvicorn gateway.main:app --reload
 已完成:契约冻结;Cartesia 接入(HTTP,流式 + 非流式),`interface.py` 和
 `router.py` 一行未改;TTFA 基线已归档(非流式 p50 1117ms → 流式 p50 226ms)。
 
-现在的任务是 `ElevenLabsProvider`。它是 WebSocket,Cartesia 是 HTTP;它吐 MP3,
-Cartesia 吐原生 24kHz PCM —— 所以这一步同时是**传输层抽象**和**归一层**的第一次
-真正验证。
+现在的任务是 `ElevenLabsProvider`,**只考一科**:它是 WebSocket,Cartesia 是
+HTTP SSE —— WebSocket 能不能塞进同一个 `async generator`。
+
+用 `output_format=pcm_24000`,不碰 MP3,**不加任何新依赖**。归一层的验证放 ⑤
+(自托管模型原生 22050/44100Hz,零新依赖就能触发)。同时塞进 MP3 解码等于一场
+考试考两科,跑挂了分不清是抽象漏了还是解码器写错了。
 
 **如果为了兼容需要改 `interface.py`,停下来说明原因,不要自己改。**
 第二家能接进去而不用改接口,才说明契约做对了。

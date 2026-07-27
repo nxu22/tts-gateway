@@ -4,6 +4,27 @@ A per-chunk resampler passes every contract assertion — correct sample rate, w
 frames, contiguous sequence numbers — while producing audio with a discontinuity at
 every chunk boundary. The only way to catch it is to look at the waveform, so that is
 what these tests do.
+
+## The first version of this file was green and tested nothing
+
+It used a 220Hz tone split into 100ms chunks. 220Hz for 100ms is exactly 22 cycles, so
+every chunk boundary landed precisely on a zero crossing. A resampler restarted at a
+zero crossing resumes from silence at a sample that was already silent — there is no
+step to detect. The broken implementation and the correct one produced indistinguishable
+waveforms, the suite passed, and it was measuring nothing at all.
+
+The tone is 233Hz now: 23.3 cycles per chunk, so boundaries fall mid-waveform where a
+discarded filter state actually shows. Same defect, same detector, and suddenly a 5x
+gap between the two implementations.
+
+A second, subtler version of the same mistake followed. The detector originally scanned
+the whole output, so it also flagged the stream's own first and last samples — a tone
+that starts or stops mid-cycle steps there by definition. That is a property of the test
+signal, not a seam. Seams are interior, so the edges are excluded.
+
+The lesson both times: a test that passes has proven nothing until you have watched it
+fail for the reason you intend. See the cheat modes in `test_contract.py` for the same
+principle applied deliberately rather than by accident.
 """
 
 from __future__ import annotations

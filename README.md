@@ -95,6 +95,30 @@ TTFA — so it was measured too: **0.0 ms for Cartesia**, whose first SSE fragme
 already carries 133ms of audio and clears the floor unaided. That is a fact about one
 vendor's framing, not a general result, and it gets re-measured per provider.
 
+## A defect the contract cannot see
+
+Resampling has to happen inside a provider, and it has to use one resampler instance for
+the whole stream. Build a fresh one per chunk and each boundary restarts the filter from
+silence, leaving a discontinuity at every seam — audible as a click.
+
+Nothing in the contract suite catches this. The sample rate is right, the frames are
+whole, the sequence numbers are contiguous; only the waveform is wrong. So the waveform
+is measured: the largest jump between consecutive samples, which for a continuous tone
+is bounded by its own slope.
+
+| | max sample-to-sample step |
+|---|---|
+| theoretical bound for the tone | 600 |
+| one resampler per stream | **599** |
+| one resampler per chunk | **3310** |
+
+The first version of that test was green and proved nothing. It used a 220Hz tone in
+100ms chunks — exactly 22 cycles, so every boundary landed on a zero crossing, where a
+restarted filter leaves no step to find. Both implementations looked identical. Detuning
+to 233Hz put the boundaries mid-waveform and the 5x gap appeared. The episode is written
+up in [tests/test_resample.py](tests/test_resample.py), because a passing test has proven
+nothing until it has been watched failing for the intended reason.
+
 ## Measurement rules
 
 - **TTFA** is measured from when the caller issued the request, not from when the
