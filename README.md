@@ -89,6 +89,12 @@ including hardware and raw samples, are in [bench/results/](bench/results/).
 The point is not that the gateway streams. It is that the cost of not streaming is a
 known number rather than an assumption.
 
+The same applies to the contract's own overhead. Requiring 20ms of audio in the first
+chunk means early fragments may have to be held back, which is a delay charged to
+TTFA — so it was measured too: **0.0 ms for Cartesia**, whose first SSE fragment
+already carries 133ms of audio and clears the floor unaided. That is a fact about one
+vendor's framing, not a general result, and it gets re-measured per provider.
+
 ## Measurement rules
 
 - **TTFA** is measured from when the caller issued the request, not from when the

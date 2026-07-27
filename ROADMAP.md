@@ -42,6 +42,16 @@ TTFA(同一份测量代码,20 次,并发 1):
 
 非流式那条路留着没删 —— 不是 fallback,是为了随时能重跑这个对比。
 
+首 chunk 合并(为满足 `MIN_FIRST_CHUNK_MS`)的代价也量了:**0.0ms**。Cartesia 首个
+SSE 分片就带 133ms 音频,远超 20ms 地板,合并逻辑一次没触发。这是 Cartesia 分片
+方式的事实,不是通用结论 —— 每家都要重新量。
+
+`VoiceSpec.speed` 已删除(Alex 决定)。理由和删 `ProviderRegistration` 同类:
+各家能力不对等,`speed=1.2` 在 ElevenLabs 成功、在 Cartesia 抛 `InvalidRequest`,
+而 `InvalidRequest` 不 failover —— failover 第一态又会被"能力不对等"废掉。
+真要支持得先引入**能力声明**(provider 声明支持什么,router 按能力过滤候选),
+那是接口变更,等有场景再做。
+
 ⚠️ **这一步没有验证归一层。** Cartesia 原生就吐 24kHz pcm_s16le,重采样和解码
 代码一次都没执行。真正的考验在 ④,ElevenLabs 吐 MP3 的时候。
 

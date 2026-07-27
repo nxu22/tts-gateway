@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from collections.abc import AsyncIterator
 
 import httpx
@@ -97,6 +98,10 @@ class CartesiaProvider(TTSProvider):
         self._model = model
         self._timeout_s = timeout_s
         self._buffered = buffered
+        #: Diagnostics for the MIN_FIRST_CHUNK_MS coalescing; see _record_coalesce_cost.
+        self.last_coalesce_ms: float | None = None
+        self.last_coalesce_fragments: int | None = None
+        self.last_first_chunk_ms: float | None = None
         # One client per provider instance so connections are reused across requests.
         # A fresh TLS handshake on every call would inflate TTFA and misrepresent the
         # baseline.
@@ -141,12 +146,6 @@ class CartesiaProvider(TTSProvider):
         if len(text) > MAX_TEXT_CHARS:
             raise InvalidRequest(
                 f"text too long: {len(text)} > {MAX_TEXT_CHARS}", provider=self.name
-            )
-        if voice.speed != 1.0:
-            # Better to reject than to silently ignore what the caller asked for.
-            raise InvalidRequest(
-                f"speed={voice.speed} is not supported by this provider yet",
-                provider=self.name,
             )
         return self._resolve_voice(voice)
 
@@ -210,6 +209,8 @@ class CartesiaProvider(TTSProvider):
         pending = bytearray()
         min_first_bytes = int(SAMPLE_RATE * MIN_FIRST_CHUNK_MS / 1000) * SAMPLE_WIDTH_BYTES
         started = False
+        first_fragment_at: float | None = None
+        fragments_before_first_chunk = 0
 
         try:
             async with self._client.stream("POST", "/tts/sse", json=payload) as response:
@@ -224,6 +225,10 @@ class CartesiaProvider(TTSProvider):
                     chunk = self._decode_sse_line(line)
                     if chunk is None:
                         continue
+                    if first_fragment_at is None:
+                        first_fragment_at = time.perf_counter()
+                    if seq == 0:
+                        fragments_before_first_chunk += 1
                     pending.extend(chunk)
 
                     ready = len(pending) - (len(pending) % SAMPLE_WIDTH_BYTES)
@@ -234,6 +239,12 @@ class CartesiaProvider(TTSProvider):
 
                     out = bytes(pending[:ready])
                     del pending[:ready]
+                    if seq == 0:
+                        self._record_coalesce_cost(
+                            first_fragment_at,
+                            fragments_before_first_chunk,
+                            first_chunk_bytes=ready,
+                        )
                     yield AudioChunk(seq=seq, pcm=out)
                     seq += 1
                     total_samples += ready // SAMPLE_WIDTH_BYTES
@@ -251,6 +262,20 @@ class CartesiaProvider(TTSProvider):
             raise StreamInterrupted("provider returned no audio", provider=self.name)
 
         yield StreamEnded(total_samples=total_samples)
+
+    def _record_coalesce_cost(
+        self, first_fragment_at: float, fragments: int, first_chunk_bytes: int
+    ) -> None:
+        """Record what the `MIN_FIRST_CHUNK_MS` rule cost this stream, in milliseconds.
+
+        Diagnostics only — nothing in the gateway reads this, and it is only meaningful
+        at concurrency 1 since it is per-instance rather than per-stream. It exists so
+        "we buffer the first chunk to satisfy our own assertion" comes with a number
+        attached instead of a shrug.
+        """
+        self.last_coalesce_ms = (time.perf_counter() - first_fragment_at) * 1000
+        self.last_coalesce_fragments = fragments
+        self.last_first_chunk_ms = first_chunk_bytes / SAMPLE_WIDTH_BYTES / SAMPLE_RATE * 1000
 
     def _decode_sse_line(self, line: str) -> bytes | None:
         """Return the PCM carried by one SSE line, or None if it carries no audio."""

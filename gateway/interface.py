@@ -61,11 +61,22 @@ class VoiceSpec:
     provider resolves it to its own vendor voice id in its own file. A logical name
     must resolve on every provider in the pool, otherwise failing over produces
     silence.
+
+    **There is deliberately no `speed` field**, and the same reasoning applies to any
+    future knob. Vendors do not support the same controls: ElevenLabs offers speed,
+    Cartesia does not expose it here. A request carrying ``speed=1.2`` would succeed on
+    one provider and be rejected by another, so failing over would kill the request
+    outright — the same class of bug as leaking a vendor voice id, just slower to show
+    up. Nothing needs speed today, so nothing here provides it.
+
+    If a caller ever does need it, the fix is not to add the field. It is to add
+    capability declarations, so the router can filter candidates by what each provider
+    can actually honour. That is an interface change and should be made deliberately,
+    with the "what happens on failover" question answered first.
     """
 
     name: str
     language: str = "en-US"
-    speed: float = 1.0
 
 
 # --- Events ----------------------------------------------------------------
