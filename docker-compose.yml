@@ -1,0 +1,9 @@
+# 占位。Week 0 不用 docker 也能跑(uv run uvicorn gateway.main:app --reload)。
+# 自托管 GPU provider 落地时再填 runtime: nvidia / deploy.resources。
+services:
+  gateway:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000

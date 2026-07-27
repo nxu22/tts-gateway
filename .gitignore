@@ -1,0 +1,32 @@
+# secrets —— 只有 .env.example 进仓库
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 音频产物:跑分生成的 wav 不进仓库,只留 bench/results/*.md 和 *.json
+*.wav
+*.mp3
+*.flac
+*.opus
+bench/audio/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

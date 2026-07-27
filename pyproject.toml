@@ -1,0 +1,53 @@
+[project]
+name = "tts-gateway"
+version = "0.1.0"
+description = "Multi-engine TTS gateway with a single streaming contract, failover, and a voice-quality eval harness"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "websockets>=13.0",
+    "numpy>=2.0",
+    "soxr>=0.5",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+# 自托管 provider 专用。默认不装,CI 不装。
+selfhosted = [
+    "torch>=2.4",
+    "transformers>=4.44",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["gateway", "normalize", "eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: 打真实 provider API,烧额度。默认跳过,用 `pytest -m live` 手动跑。",
+]
+# 默认跳过 live:CI 和日常开发只跑 FakeProvider。
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gateway", "normalize", "eval"]
