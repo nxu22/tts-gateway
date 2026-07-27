@@ -55,7 +55,19 @@ SSE 分片就带 133ms 音频,远超 20ms 地板,合并逻辑一次没触发。�
 ⚠️ **这一步没有验证归一层。** Cartesia 原生就吐 24kHz pcm_s16le,重采样和解码
 代码一次都没执行。真正的考验在 ④,ElevenLabs 吐 MP3 的时候。
 
-## ④ ElevenLabs provider —— 真正的考验 · ← 当前
+## ④ ElevenLabs provider —— 真正的考验 · ← 当前(被 key 卡住)
+
+已完成的、不依赖 key 的那半:`gateway/providers/_resample.py` —— 流式重采样器,
+**一条流一个实例**,跨 chunk 保留滤波器状态和半个采样的余数。
+
+接缝缺陷契约测试抓不到(采样率、字节对齐、seq 全对,只有波形是坏的),所以
+`tests/test_resample.py` 直接量波形:相邻采样最大跳变,流式 **599** vs 每 chunk
+新建 **3310**(纯音理论上限 600)。
+
+写这个测试时踩了两个坑,都记下来:
+- 第一版用 220Hz + 100ms chunk = 正好 22 个整周期,每个接缝都落在过零点上,
+  缺陷完全隐形,测试是空转的。改成 233Hz 才暴露出来。
+- 检测器把信号自身的首尾截断也算成了接缝。接缝是**内部**现象,现在只测内部。
 
 实现 `ElevenLabsProvider`。它是 WebSocket,Cartesia 是 HTTP chunked。
 
