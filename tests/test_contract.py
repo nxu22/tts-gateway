@@ -35,16 +35,23 @@ from gateway.interface import (
     TTSProvider,
     VoiceSpec,
 )
+from gateway.providers.cartesia import CartesiaProvider
 from gateway.providers.fake import FakeProvider
 
 TEXT = "The quick brown fox jumps over the lazy dog."
-VOICE = VoiceSpec(name="contract-test-voice", language="en-US")
+
+#: A gateway-level logical voice, not a vendor id. Every provider in PROVIDERS must be
+#: able to resolve this name — that requirement is the whole reason failover can switch
+#: vendors without the caller hearing a different speaker.
+VOICE = VoiceSpec(name="receptionist-en-ca-female", language="en-US")
 
 ProviderFactory = Callable[..., TTSProvider]
 
-#: One line per provider. Real providers join with marks=[pytest.mark.live].
+#: One line per provider. Real providers carry marks=pytest.mark.live and are skipped
+#: unless you run `pytest -m live`.
 PROVIDERS: list[pytest.param] = [
     pytest.param(FakeProvider, id="fake"),
+    pytest.param(CartesiaProvider, id="cartesia", marks=pytest.mark.live),
 ]
 
 #: Implementations that support fault injection (only FakeProvider today).
@@ -294,7 +301,12 @@ async def test_cancellation_propagates_and_cleans_up(fault_factory: ProviderFact
 
 
 async def test_concurrent_streams_do_not_interleave(provider_factory: ProviderFactory) -> None:
-    """Two concurrent streams on one provider instance keep independent sequences."""
+    """Two concurrent streams on one provider instance keep independent sequences.
+
+    Byte-for-byte equality is deliberately *not* asserted here: real engines are not
+    obliged to be deterministic across identical requests. The determinism check lives
+    with FakeProvider at the bottom of this file, where it is a fair expectation.
+    """
     provider = provider_factory()
 
     left, right = await asyncio.gather(
@@ -303,8 +315,15 @@ async def test_concurrent_streams_do_not_interleave(provider_factory: ProviderFa
     )
 
     for events in (left, right):
-        assert [c.seq for c in chunks(events)] == list(range(len(chunks(events))))
-    assert [c.pcm for c in chunks(left)] == [c.pcm for c in chunks(right)]
+        audio = chunks(events)
+        assert [c.seq for c in audio] == list(range(len(audio))), "sequences must not interleave"
+        assert sum(c.sample_count for c in audio) > 0
+
+    durations = [sum(c.duration_ms for c in chunks(events)) for events in (left, right)]
+    assert min(durations) > 0.5 * max(durations), (
+        f"same text and voice produced wildly different durations {durations} — "
+        "the two streams probably corrupted each other"
+    )
 
 
 # --- 12. Health ------------------------------------------------------------
@@ -324,6 +343,22 @@ async def test_check_health_returns_status_without_synthesizing(
 # exactly like one that works. These feed deliberately cheating providers into the two
 # shared assertion helpers above. If an assertion stops catching its cheat, this goes
 # red.
+
+
+async def test_fake_provider_is_deterministic() -> None:
+    """FakeProvider must be byte-identical across runs.
+
+    Not a contract requirement — real engines are free to vary — but CI depends on it,
+    and a fake that drifts would make every other assertion here unreliable.
+    """
+    provider = FakeProvider()
+
+    left, right = await asyncio.gather(
+        collect(provider.synthesize(TEXT, VOICE)),
+        collect(provider.synthesize(TEXT, VOICE)),
+    )
+
+    assert [c.pcm for c in chunks(left)] == [c.pcm for c in chunks(right)]
 
 
 @pytest.mark.parametrize("cheat", ["empty", "silent", "short"])
