@@ -1,23 +1,34 @@
 """Cartesia provider.
 
-**This is the buffered (non-streaming) baseline.** It fetches the entire utterance
-over HTTP, then slices the buffer into chunks and emits them. The event stream has the
-right shape, but no audio leaves this file until the last byte has arrived. Streaming
-comes next; the whole point of measuring TTFA now is to have a number to compare
-against once it does. See `bench/results/` for the baseline.
+Two transports, both satisfying the same contract:
+
+- **streaming** (default): server-sent events from ``/tts/sse``; audio is forwarded as
+  it arrives.
+- **buffered**: ``/tts/bytes`` fetches the whole utterance, then slices it.
+
+The buffered path is kept deliberately. It is not a fallback and nothing depends on
+it — it exists so the streaming-vs-buffered TTFA comparison can be re-run at any time
+rather than resting on one archived measurement. Both are measured by identical
+instrumentation in `tests/test_ttfa_baseline.py`.
+
+That comparison is the only thing that distinguishes them: a buffered implementation
+satisfies every assertion in the contract suite. Ordering, first-chunk content, and
+sequence numbers all look identical. Only TTFA tells them apart.
 
 Two things this provider does **not** prove, worth stating plainly:
 
-- **The normalization layer is untested by it.** Cartesia can emit
-  ``pcm_s16le`` at 24000 Hz natively, which is exactly the gateway's wire format, so
-  the decode/resample path never runs. The first real exercise of that path is
-  ElevenLabs returning MP3.
-- **It does not prove the transport abstraction holds.** Cartesia is HTTP; the
-  interface only earns that claim when a WebSocket vendor goes in without changes.
+- **The normalization layer is untested by it.** Cartesia emits ``pcm_s16le`` at
+  24000 Hz natively, which is exactly the gateway's wire format, so the
+  decode/resample path never runs. The first real exercise of that path is ElevenLabs
+  returning MP3.
+- **It does not prove the transport abstraction holds.** Cartesia is HTTP either way;
+  the interface only earns that claim when a WebSocket vendor goes in unchanged.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from collections.abc import AsyncIterator
 
@@ -25,6 +36,7 @@ import httpx
 
 from gateway.interface import (
     MAX_TEXT_CHARS,
+    MIN_FIRST_CHUNK_MS,
     SAMPLE_RATE,
     SAMPLE_WIDTH_BYTES,
     AudioChunk,
@@ -64,6 +76,8 @@ class CartesiaProvider(TTSProvider):
         api_key: Defaults to ``CARTESIA_API_KEY``.
         model: Cartesia model id.
         timeout_s: Applied to the whole request.
+        buffered: Fetch the complete utterance before emitting anything. Off by
+            default; used to reproduce the non-streaming TTFA baseline.
     """
 
     name = "cartesia"
@@ -74,6 +88,7 @@ class CartesiaProvider(TTSProvider):
         api_key: str | None = None,
         model: str = _DEFAULT_MODEL,
         timeout_s: float = 30.0,
+        buffered: bool = False,
     ) -> None:
         key = api_key or os.environ.get("CARTESIA_API_KEY", "")
         if not key:
@@ -81,6 +96,7 @@ class CartesiaProvider(TTSProvider):
         self._api_key = key
         self._model = model
         self._timeout_s = timeout_s
+        self._buffered = buffered
         # One client per provider instance so connections are reused across requests.
         # A fresh TLS handshake on every call would inflate TTFA and misrepresent the
         # baseline.
@@ -105,22 +121,8 @@ class CartesiaProvider(TTSProvider):
                 provider=self.name,
             ) from None
 
-    async def synthesize(self, text: str, voice: VoiceSpec) -> AsyncIterator:
-        if not text.strip():
-            raise InvalidRequest("empty text", provider=self.name)
-        if len(text) > MAX_TEXT_CHARS:
-            raise InvalidRequest(
-                f"text too long: {len(text)} > {MAX_TEXT_CHARS}", provider=self.name
-            )
-        if voice.speed != 1.0:
-            # Better to reject than to silently ignore what the caller asked for.
-            raise InvalidRequest(
-                f"speed={voice.speed} is not supported by this provider yet",
-                provider=self.name,
-            )
-        voice_id = self._resolve_voice(voice)
-
-        payload = {
+    def _build_payload(self, text: str, voice: VoiceSpec, voice_id: str) -> dict:
+        return {
             "model_id": self._model,
             "transcript": text,
             "voice": {"mode": "id", "id": voice_id},
@@ -133,6 +135,34 @@ class CartesiaProvider(TTSProvider):
             "language": voice.language.split("-")[0],
         }
 
+    def _validate(self, text: str, voice: VoiceSpec) -> str:
+        if not text.strip():
+            raise InvalidRequest("empty text", provider=self.name)
+        if len(text) > MAX_TEXT_CHARS:
+            raise InvalidRequest(
+                f"text too long: {len(text)} > {MAX_TEXT_CHARS}", provider=self.name
+            )
+        if voice.speed != 1.0:
+            # Better to reject than to silently ignore what the caller asked for.
+            raise InvalidRequest(
+                f"speed={voice.speed} is not supported by this provider yet",
+                provider=self.name,
+            )
+        return self._resolve_voice(voice)
+
+    async def synthesize(self, text: str, voice: VoiceSpec) -> AsyncIterator:
+        voice_id = self._validate(text, voice)
+        payload = self._build_payload(text, voice, voice_id)
+
+        if self._buffered:
+            async for event in self._synthesize_buffered(payload, voice_id):
+                yield event
+        else:
+            async for event in self._synthesize_streaming(payload, voice_id):
+                yield event
+
+    async def _synthesize_buffered(self, payload: dict, voice_id: str) -> AsyncIterator:
+        """Fetch the whole utterance, then slice it. The non-streaming baseline."""
         try:
             response = await self._client.post("/tts/bytes", json=payload)
         except httpx.TimeoutException as exc:
@@ -160,6 +190,88 @@ class CartesiaProvider(TTSProvider):
             seq += 1
 
         yield StreamEnded(total_samples=usable // SAMPLE_WIDTH_BYTES)
+
+    async def _synthesize_streaming(self, payload: dict, voice_id: str) -> AsyncIterator:
+        """Forward audio as the SSE stream delivers it.
+
+        Cartesia sends ``event: chunk`` / ``data: {"type": "chunk", "data": "<base64>"}``
+        with raw PCM inside. Two things have to be smoothed over on the way out:
+
+        - Vendor chunk boundaries are not guaranteed to fall on 16-bit frames, so a
+          leftover byte is carried into the next chunk.
+        - The contract requires the *first* chunk to carry at least
+          `MIN_FIRST_CHUNK_MS` of audio, so early fragments are coalesced until that
+          threshold is met. This costs a few milliseconds of TTFA and is the honest
+          way to satisfy the rule — emitting a 1ms chunk to stop the clock earlier is
+          exactly the land-grab the contract test exists to catch.
+        """
+        seq = 0
+        total_samples = 0
+        pending = bytearray()
+        min_first_bytes = int(SAMPLE_RATE * MIN_FIRST_CHUNK_MS / 1000) * SAMPLE_WIDTH_BYTES
+        started = False
+
+        try:
+            async with self._client.stream("POST", "/tts/sse", json=payload) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    self._raise_for_status(response)
+
+                yield StreamStarted(provider=self.name, voice_resolved=voice_id)
+                started = True
+
+                async for line in response.aiter_lines():
+                    chunk = self._decode_sse_line(line)
+                    if chunk is None:
+                        continue
+                    pending.extend(chunk)
+
+                    ready = len(pending) - (len(pending) % SAMPLE_WIDTH_BYTES)
+                    if seq == 0 and ready < min_first_bytes:
+                        continue
+                    if ready == 0:
+                        continue
+
+                    out = bytes(pending[:ready])
+                    del pending[:ready]
+                    yield AudioChunk(seq=seq, pcm=out)
+                    seq += 1
+                    total_samples += ready // SAMPLE_WIDTH_BYTES
+        except httpx.TimeoutException as exc:
+            if started:
+                raise StreamInterrupted(f"stream timed out: {exc}", provider=self.name) from exc
+            raise ProviderUnavailable(f"request timed out: {exc}", provider=self.name) from exc
+        except httpx.HTTPError as exc:
+            # Once audio is flowing this is a truncation, not a failover candidate.
+            if started:
+                raise StreamInterrupted(f"stream failed: {exc}", provider=self.name) from exc
+            raise ProviderUnavailable(f"request failed: {exc}", provider=self.name) from exc
+
+        if total_samples == 0:
+            raise StreamInterrupted("provider returned no audio", provider=self.name)
+
+        yield StreamEnded(total_samples=total_samples)
+
+    def _decode_sse_line(self, line: str) -> bytes | None:
+        """Return the PCM carried by one SSE line, or None if it carries no audio."""
+        if not line.startswith("data:"):
+            return None
+        raw = line[len("data:") :].strip()
+        if not raw:
+            return None
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise StreamInterrupted(f"malformed SSE payload: {exc}", provider=self.name) from exc
+
+        kind = event.get("type")
+        if kind == "error":
+            raise StreamInterrupted(
+                f"provider error mid-stream: {event.get('error', event)}", provider=self.name
+            )
+        if kind != "chunk" or not event.get("data"):
+            return None
+        return base64.b64decode(event["data"])
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Translate HTTP status into the gateway's error taxonomy.

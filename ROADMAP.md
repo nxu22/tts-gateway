@@ -28,12 +28,24 @@ docker-compose 占位。所有 `.py` 只放 docstring,不写实现。
 推迟:`synthesize` 只收 `str`。LLM token 级串流是后面真正的延迟大头,到时候动接口 ——
 是**新增重载**而不是破坏性改动,可以接受。
 
-## ③ Cartesia provider · ← 当前
+## ③ Cartesia provider · ✅ 完成
 
-实现 `CartesiaProvider`,目标是通过现有契约测试。先非流式,跑通后再加流式。
-**不许改 `interface.py` 和 `router.py`。**
+`gateway/providers/cartesia.py`。`interface.py` 和 `router.py` 一行未改,
+`tests/test_contract.py` 只加了注册的那一行。12 条 live 断言通过。
 
-## ④ ElevenLabs provider —— 真正的考验
+TTFA(同一份测量代码,20 次,并发 1):
+
+| 模式 | p50 | p95 |
+|---|---|---|
+| 非流式 `/tts/bytes` | 1117 ms | 1589 ms |
+| 流式 `/tts/sse` | **226 ms** | **311 ms** |
+
+非流式那条路留着没删 —— 不是 fallback,是为了随时能重跑这个对比。
+
+⚠️ **这一步没有验证归一层。** Cartesia 原生就吐 24kHz pcm_s16le,重采样和解码
+代码一次都没执行。真正的考验在 ④,ElevenLabs 吐 MP3 的时候。
+
+## ④ ElevenLabs provider —— 真正的考验 · ← 当前
 
 实现 `ElevenLabsProvider`。它是 WebSocket,Cartesia 是 HTTP chunked。
 

@@ -71,8 +71,8 @@ async def _measure_ttfa_ms(provider: CartesiaProvider) -> tuple[float, float]:
     return ttfa, duration_ms
 
 
-async def test_ttfa_baseline_non_streaming() -> None:
-    provider = CartesiaProvider()
+async def _run_baseline(provider: CartesiaProvider, mode: str, slug: str) -> float:
+    """Warm up, take `RUNS` samples, archive the report. Returns p50 in ms."""
     try:
         # Warm up the TLS connection with a health check, not a synthesis. Otherwise
         # run 1 carries the handshake and skews the tail. Costs no credits.
@@ -89,10 +89,10 @@ async def test_ttfa_baseline_non_streaming() -> None:
 
     quantiles = statistics.quantiles(samples, n=100, method="inclusive")
     p50, p95 = quantiles[49], quantiles[94]
-    report = _render_report(samples, durations, p50, p95)
+    report = _render_report(mode, samples, durations, p50, p95)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"{date.today():%Y-%m-%d}_cartesia_non-streaming_ttfa.md"
+    out = RESULTS_DIR / f"{date.today():%Y-%m-%d}_cartesia_{slug}_ttfa.md"
     out.write_text(report, encoding="utf-8")
 
     print(f"\n{report}\nwrote {out}")
@@ -100,18 +100,30 @@ async def test_ttfa_baseline_non_streaming() -> None:
     # A sanity floor, not a performance target: anything under 10ms means the
     # stopwatch is measuring the wrong thing (a cached response, a mocked client).
     assert p50 > 10, f"p50 of {p50:.1f}ms is implausible for a network round trip"
+    return p50
 
 
-def _render_report(samples: list[float], durations: list[float], p50: float, p95: float) -> str:
+async def test_ttfa_baseline_non_streaming() -> None:
+    await _run_baseline(
+        CartesiaProvider(buffered=True), "non-streaming (buffered)", "non-streaming"
+    )
+
+
+async def test_ttfa_streaming() -> None:
+    await _run_baseline(CartesiaProvider(), "streaming (SSE)", "streaming")
+
+
+def _render_report(
+    mode: str, samples: list[float], durations: list[float], p50: float, p95: float
+) -> str:
     audio_s = statistics.mean(durations) / 1000
     rtf = [audio / (ttfa) for audio, ttfa in zip(durations, samples, strict=True)]
     return "\n".join(
         [
-            "# Cartesia TTFA baseline — non-streaming (buffered)",
+            f"# Cartesia TTFA — {mode}",
             "",
             f"- date: {date.today():%Y-%m-%d}",
-            "- provider: cartesia (`sonic-3`, HTTP `/tts/bytes`, raw pcm_s16le 24kHz)",
-            "- implementation: **buffered** — the full utterance is fetched, then sliced",
+            f"- provider: cartesia (`sonic-3`, raw pcm_s16le 24kHz, {mode})",
             f"- runs: {RUNS}",
             f"- concurrency: {CONCURRENCY}",
             f"- hardware: {_hardware_label()}",
@@ -137,8 +149,8 @@ def _render_report(samples: list[float], durations: list[float], p50: float, p95
             "numbers are contiguous. Nothing in the test suite can tell it apart from a",
             "genuinely streaming one. Only TTFA can.",
             "",
-            "The streaming implementation will be measured with this same code,",
-            "unchanged, so the two numbers are comparable.",
+            "Both modes are measured by the same instrumentation, unchanged, so the two",
+            "numbers are comparable.",
             "",
             f"Raw samples (ms): {[round(s) for s in samples]}",
             "",

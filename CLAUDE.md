@@ -130,12 +130,17 @@ uv run uvicorn gateway.main:app --reload
 
 > 每完成一个阶段更新这一节。
 
-**Week 1 —— 第一家 provider(Cartesia)。**
-契约已经冻结:`gateway/interface.py`、`gateway/providers/fake.py`、
-`tests/test_contract.py`(23 条断言全绿)。
+**Week 2 —— 第二家 provider(ElevenLabs),真正的考验。**
 
-现在的任务是让 `CartesiaProvider` 通过**现有**契约测试。先非流式,跑通再加流式。
-**不许改 `interface.py` 和 `router.py`** —— 要改就先停下来说明理由。
+已完成:契约冻结;Cartesia 接入(HTTP,流式 + 非流式),`interface.py` 和
+`router.py` 一行未改;TTFA 基线已归档(非流式 p50 1117ms → 流式 p50 226ms)。
+
+现在的任务是 `ElevenLabsProvider`。它是 WebSocket,Cartesia 是 HTTP;它吐 MP3,
+Cartesia 吐原生 24kHz PCM —— 所以这一步同时是**传输层抽象**和**归一层**的第一次
+真正验证。
+
+**如果为了兼容需要改 `interface.py`,停下来说明原因,不要自己改。**
+第二家能接进去而不用改接口,才说明契约做对了。
 
 完整计划见 [ROADMAP.md](./ROADMAP.md)。
 

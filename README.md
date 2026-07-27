@@ -68,6 +68,27 @@ carries deliberate cheat modes and the suite is checked against them:
 A clean diagonal: each cheat is caught by the assertion aimed at it, and nothing else
 trips. The assertions are neither vacuous nor over-tight.
 
+## What streaming is worth
+
+The contract suite cannot tell a streaming implementation from a buffered one. A
+provider that fetches the whole utterance and then slices it emits the same events in
+the same order, with real audio in the first chunk and contiguous sequence numbers —
+all 12 live assertions pass either way. Only latency separates them.
+
+So both were built and measured with identical instrumentation, one provider, same
+text, same voice, same machine:
+
+| Cartesia `sonic-3` | TTFA p50 | TTFA p95 |
+|---|---|---|
+| buffered (`/tts/bytes`) | 1117 ms | 1589 ms |
+| streaming (`/tts/sse`) | **226 ms** | **311 ms** |
+
+Roughly a 5× reduction, measured at concurrency 1 over 20 runs each. Full reports,
+including hardware and raw samples, are in [bench/results/](bench/results/).
+
+The point is not that the gateway streams. It is that the cost of not streaming is a
+known number rather than an assumption.
+
 ## Measurement rules
 
 - **TTFA** is measured from when the caller issued the request, not from when the

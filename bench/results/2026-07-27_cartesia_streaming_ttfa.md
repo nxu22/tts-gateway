@@ -1,24 +1,24 @@
-# Cartesia TTFA — non-streaming (buffered)
+# Cartesia TTFA — streaming (SSE)
 
 - date: 2026-07-27
-- provider: cartesia (`sonic-3`, raw pcm_s16le 24kHz, non-streaming (buffered))
+- provider: cartesia (`sonic-3`, raw pcm_s16le 24kHz, streaming (SSE))
 - runs: 20
 - concurrency: 1
 - hardware: Windows 11 / AMD64 / 16 cores
 - text: 'Thanks for calling. I can book that appointment for you right now.' (66 chars)
-- mean audio produced: 3.33s
+- mean audio produced: 3.22s
 
 TTFA is measured from before the request is issued to the arrival of the
 first AudioChunk at the caller.
 
 | metric | ms |
 |---|---|
-| min | 639 |
-| p50 | 1117 |
-| p95 | 1589 |
-| max | 2689 |
+| min | 159 |
+| p50 | 226 |
+| p95 | 311 |
+| max | 326 |
 
-Mean audio-seconds per TTFA-second: 3.0
+Mean audio-seconds per TTFA-second: 14.5
 
 ## Why this number exists
 
@@ -30,4 +30,4 @@ genuinely streaming one. Only TTFA can.
 Both modes are measured by the same instrumentation, unchanged, so the two
 numbers are comparable.
 
-Raw samples (ms): [892, 1198, 1420, 1531, 1328, 1097, 873, 833, 2689, 1189, 639, 1038, 1493, 1516, 789, 762, 1367, 1137, 968, 886]
+Raw samples (ms): [218, 186, 162, 266, 213, 200, 237, 220, 240, 326, 233, 222, 242, 159, 283, 224, 310, 199, 259, 228]
