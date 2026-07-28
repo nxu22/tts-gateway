@@ -37,7 +37,6 @@ import httpx
 
 from gateway.interface import (
     MAX_TEXT_CHARS,
-    MIN_FIRST_CHUNK_MS,
     SAMPLE_RATE,
     SAMPLE_WIDTH_BYTES,
     AudioChunk,
@@ -51,6 +50,7 @@ from gateway.interface import (
     TTSProvider,
     VoiceSpec,
 )
+from gateway.providers._framing import ChunkAssembler
 
 _BASE_URL = "https://api.cartesia.ai"
 _API_VERSION = "2025-04-16"
@@ -194,23 +194,12 @@ class CartesiaProvider(TTSProvider):
         """Forward audio as the SSE stream delivers it.
 
         Cartesia sends ``event: chunk`` / ``data: {"type": "chunk", "data": "<base64>"}``
-        with raw PCM inside. Two things have to be smoothed over on the way out:
-
-        - Vendor chunk boundaries are not guaranteed to fall on 16-bit frames, so a
-          leftover byte is carried into the next chunk.
-        - The contract requires the *first* chunk to carry at least
-          `MIN_FIRST_CHUNK_MS` of audio, so early fragments are coalesced until that
-          threshold is met. This costs a few milliseconds of TTFA and is the honest
-          way to satisfy the rule — emitting a 1ms chunk to stop the clock earlier is
-          exactly the land-grab the contract test exists to catch.
+        with raw PCM inside. Reframing those fragments into contract-shaped chunks is
+        `ChunkAssembler`'s job; everything here is Cartesia-specific.
         """
-        seq = 0
-        total_samples = 0
-        pending = bytearray()
-        min_first_bytes = int(SAMPLE_RATE * MIN_FIRST_CHUNK_MS / 1000) * SAMPLE_WIDTH_BYTES
+        assembler = ChunkAssembler()
         started = False
         first_fragment_at: float | None = None
-        fragments_before_first_chunk = 0
 
         try:
             async with self._client.stream("POST", "/tts/sse", json=payload) as response:
@@ -222,32 +211,18 @@ class CartesiaProvider(TTSProvider):
                 started = True
 
                 async for line in response.aiter_lines():
-                    chunk = self._decode_sse_line(line)
-                    if chunk is None:
+                    fragment = self._decode_sse_line(line)
+                    if fragment is None:
                         continue
                     if first_fragment_at is None:
                         first_fragment_at = time.perf_counter()
-                    if seq == 0:
-                        fragments_before_first_chunk += 1
-                    pending.extend(chunk)
 
-                    ready = len(pending) - (len(pending) % SAMPLE_WIDTH_BYTES)
-                    if seq == 0 and ready < min_first_bytes:
+                    chunk = assembler.push(fragment)
+                    if chunk is None:
                         continue
-                    if ready == 0:
-                        continue
-
-                    out = bytes(pending[:ready])
-                    del pending[:ready]
-                    if seq == 0:
-                        self._record_coalesce_cost(
-                            first_fragment_at,
-                            fragments_before_first_chunk,
-                            first_chunk_bytes=ready,
-                        )
-                    yield AudioChunk(seq=seq, pcm=out)
-                    seq += 1
-                    total_samples += ready // SAMPLE_WIDTH_BYTES
+                    if chunk.seq == 0:
+                        self._record_coalesce_cost(first_fragment_at, assembler)
+                    yield chunk
         except httpx.TimeoutException as exc:
             if started:
                 raise StreamInterrupted(f"stream timed out: {exc}", provider=self.name) from exc
@@ -258,14 +233,16 @@ class CartesiaProvider(TTSProvider):
                 raise StreamInterrupted(f"stream failed: {exc}", provider=self.name) from exc
             raise ProviderUnavailable(f"request failed: {exc}", provider=self.name) from exc
 
-        if total_samples == 0:
+        tail = assembler.flush()
+        if tail is not None:
+            yield tail
+
+        if assembler.total_samples == 0:
             raise StreamInterrupted("provider returned no audio", provider=self.name)
 
-        yield StreamEnded(total_samples=total_samples)
+        yield StreamEnded(total_samples=assembler.total_samples)
 
-    def _record_coalesce_cost(
-        self, first_fragment_at: float, fragments: int, first_chunk_bytes: int
-    ) -> None:
+    def _record_coalesce_cost(self, first_fragment_at: float, assembler: ChunkAssembler) -> None:
         """Record what the `MIN_FIRST_CHUNK_MS` rule cost this stream, in milliseconds.
 
         Diagnostics only — nothing in the gateway reads this, and it is only meaningful
@@ -274,8 +251,8 @@ class CartesiaProvider(TTSProvider):
         attached instead of a shrug.
         """
         self.last_coalesce_ms = (time.perf_counter() - first_fragment_at) * 1000
-        self.last_coalesce_fragments = fragments
-        self.last_first_chunk_ms = first_chunk_bytes / SAMPLE_WIDTH_BYTES / SAMPLE_RATE * 1000
+        self.last_coalesce_fragments = assembler.fragments_before_first_chunk
+        self.last_first_chunk_ms = assembler.first_chunk_ms
 
     def _decode_sse_line(self, line: str) -> bytes | None:
         """Return the PCM carried by one SSE line, or None if it carries no audio."""

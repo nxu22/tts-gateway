@@ -36,10 +36,7 @@ from websockets.asyncio.client import connect
 
 from gateway.interface import (
     MAX_TEXT_CHARS,
-    MIN_FIRST_CHUNK_MS,
     SAMPLE_RATE,
-    SAMPLE_WIDTH_BYTES,
-    AudioChunk,
     HealthStatus,
     InvalidRequest,
     ProviderUnavailable,
@@ -50,6 +47,7 @@ from gateway.interface import (
     TTSProvider,
     VoiceSpec,
 )
+from gateway.providers._framing import ChunkAssembler
 
 _WS_BASE = "wss://api.elevenlabs.io/v1/text-to-speech"
 _HTTP_BASE = "https://api.elevenlabs.io"
@@ -133,10 +131,7 @@ class ElevenLabsProvider(TTSProvider):
 
         loop = asyncio.get_running_loop()
         t_connect = loop.time()
-        seq = 0
-        total_samples = 0
-        pending = bytearray()
-        min_first_bytes = int(SAMPLE_RATE * MIN_FIRST_CHUNK_MS / 1000) * SAMPLE_WIDTH_BYTES
+        assembler = ChunkAssembler()
         started = False
 
         try:
@@ -161,14 +156,9 @@ class ElevenLabsProvider(TTSProvider):
                 async for raw in socket:
                     audio, final = self._decode_message(raw)
                     if audio:
-                        pending.extend(audio)
-                        ready = len(pending) - (len(pending) % SAMPLE_WIDTH_BYTES)
-                        if not (seq == 0 and ready < min_first_bytes) and ready > 0:
-                            out = bytes(pending[:ready])
-                            del pending[:ready]
-                            yield AudioChunk(seq=seq, pcm=out)
-                            seq += 1
-                            total_samples += ready // SAMPLE_WIDTH_BYTES
+                        chunk = assembler.push(audio)
+                        if chunk is not None:
+                            yield chunk
                     if final:
                         break
         except websockets.exceptions.InvalidStatus as exc:
@@ -187,17 +177,14 @@ class ElevenLabsProvider(TTSProvider):
                 raise StreamInterrupted(f"stream failed: {exc}", provider=self.name) from exc
             raise ProviderUnavailable(f"connection failed: {exc}", provider=self.name) from exc
 
-        # Whatever is left is under the first-chunk floor only if the whole utterance was
-        # tiny; emit it rather than silently dropping audio.
-        tail = len(pending) - (len(pending) % SAMPLE_WIDTH_BYTES)
-        if tail:
-            yield AudioChunk(seq=seq, pcm=bytes(pending[:tail]))
-            total_samples += tail // SAMPLE_WIDTH_BYTES
+        tail = assembler.flush()
+        if tail is not None:
+            yield tail
 
-        if total_samples == 0:
+        if assembler.total_samples == 0:
             raise StreamInterrupted("provider returned no audio", provider=self.name)
 
-        yield StreamEnded(total_samples=total_samples)
+        yield StreamEnded(total_samples=assembler.total_samples)
 
     def _decode_message(self, raw: str | bytes) -> tuple[bytes, bool]:
         """Return (pcm, is_final) for one WebSocket message."""
