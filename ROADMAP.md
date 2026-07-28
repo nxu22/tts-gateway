@@ -55,10 +55,41 @@ SSE 分片就带 133ms 音频,远超 20ms 地板,合并逻辑一次没触发。�
 ⚠️ **这一步没有验证归一层。** Cartesia 原生就吐 24kHz pcm_s16le,重采样和解码
 代码一次都没执行。真正的考验在 ④,ElevenLabs 吐 MP3 的时候。
 
-## ④ ElevenLabs provider —— 真正的考验 · ← 当前(被 key 卡住)
+## ④ ElevenLabs provider —— 真正的考验 · ✅ 通过
 
-已完成的、不依赖 key 的那半:`gateway/providers/_resample.py` —— 流式重采样器,
-**一条流一个实例**,跨 chunk 保留滤波器状态和半个采样的余数。
+**判卷结果:`interface.py` 和 `router.py` 一行没动,12 条 live 断言第一次跑就全过。**
+`test_contract.py` 只加了注册的那一行。契约被 WebSocket 吸收掉的东西:三段式发送
+仪式(init / text / 空串 flush)、base64-in-JSON、每句话一次握手。
+
+TTFA(同一份测量代码):
+
+| 实现 | p50 | p95 |
+|---|---|---|
+| Cartesia 非流式 HTTP | 1117 ms | 1589 ms |
+| Cartesia 流式 SSE | **226 ms** | **311 ms** |
+| ElevenLabs 流式 WebSocket | 669 ms | 769 ms |
+
+两家流式的差距主要是传输层不是合成:**ElevenLabs 的 669ms 里有 344ms 是握手** ——
+它每句话关一次 socket,Cartesia 复用 HTTP 连接池。他们的 `/multi-stream-input`
+能摊薄这部分,是下一个明显的优化点。
+
+免费档的两个坑(都记一下,换 key 时会再遇到):
+- **library voices 免费账户不能用 API 调**。Rachel / Aria 都 402。可用的是
+  Sarah / Laura / Jessica 这类 default voice。
+- key 的权限是分项的。这把 key 缺 `voices_read` / `user_read`,所以运行时列不出
+  voice 列表 —— 正好印证映射表写成字面量是对的。`check_health()` 用
+  `/v1/voices/settings/default`,是这把 key 唯一有权限的便宜端点。
+
+### 已知欠账
+
+`cartesia.py` 和 `elevenlabs.py` 里的分片逻辑(首 chunk 合并 + 半采样余数携带 +
+seq 编号)是重复的。抽成共用的 `ChunkAssembler` 是明显的下一步,但那是重构,
+不和这场考试混在一起。
+
+### 顺带产出:流式重采样器
+
+`gateway/providers/_resample.py` —— **一条流一个实例**,跨 chunk 保留滤波器状态和
+半个采样的余数。④ 用 `pcm_24000` 所以它没被触发,真正验证在 ⑤。
 
 接缝缺陷契约测试抓不到(采样率、字节对齐、seq 全对,只有波形是坏的),所以
 `tests/test_resample.py` 直接量波形:相邻采样最大跳变,流式 **599** vs 每 chunk
@@ -69,17 +100,11 @@ SSE 分片就带 133ms 音频,远超 20ms 地板,合并逻辑一次没触发。�
   缺陷完全隐形,测试是空转的。改成 233Hz 才暴露出来。
 - 检测器把信号自身的首尾截断也算成了接缝。接缝是**内部**现象,现在只测内部。
 
-**范围(Alex 定):这一步只考一件事 —— WebSocket 能不能塞进同一个 async generator,
-且不改 `interface.py`。**
+范围是 Alex 定的,事后看是对的:**只考一科** —— WebSocket 能不能塞进同一个
+async generator。`output_format=pcm_24000`,不碰 MP3,不加任何新依赖。同时塞进
+MP3 解码等于一场考试考两科,跑挂了分不清是抽象漏了还是解码器写错了。
 
-- `output_format=pcm_24000`,不碰 MP3
-- **不加任何新依赖**。没有 provider 需要 MP3 解码,为没人走的路径加解码器
-  (尤其 `av` 那种带 ffmpeg 的)在作品集仓库里是负资产 —— 审代码的人会问
-  "谁在用它"
-- 同时塞进 MP3 = 一场考试考两科,跑挂了分不清是 WebSocket 抽象漏了还是解码器写错了
-
-不换 Rime:④ 考的就是传输层差异(WebSocket vs HTTP SSE),Rime 如果也是 HTTP 流,
-这场考试就白考了。
+也没换 Rime:④ 考的就是传输层差异,Rime 如果也是 HTTP 流,这场考试就白考了。
 
 实现 `ElevenLabsProvider`。它是 WebSocket,Cartesia 是 HTTP chunked。
 

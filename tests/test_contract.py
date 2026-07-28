@@ -36,6 +36,7 @@ from gateway.interface import (
     VoiceSpec,
 )
 from gateway.providers.cartesia import CartesiaProvider
+from gateway.providers.elevenlabs import ElevenLabsProvider
 from gateway.providers.fake import FakeProvider
 
 TEXT = "The quick brown fox jumps over the lazy dog."
@@ -52,6 +53,7 @@ ProviderFactory = Callable[..., TTSProvider]
 PROVIDERS: list[pytest.param] = [
     pytest.param(FakeProvider, id="fake"),
     pytest.param(CartesiaProvider, id="cartesia", marks=pytest.mark.live),
+    pytest.param(ElevenLabsProvider, id="elevenlabs", marks=pytest.mark.live),
 ]
 
 #: Implementations that support fault injection (only FakeProvider today).

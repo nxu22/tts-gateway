@@ -10,6 +10,13 @@ adding a vendor costs one new file and one registration line, and nothing above
 
 ## The contract
 
+The claim is tested rather than asserted: the second provider was added over a
+different transport — a bidirectional WebSocket, against the first provider's HTTP
+server-sent events — and passed all twelve live contract assertions with **no change to
+`interface.py` or `router.py`**. The three-message send ritual, base64-in-JSON framing,
+and per-utterance handshake are absorbed inside
+[gateway/providers/elevenlabs.py](gateway/providers/elevenlabs.py).
+
 Every provider implements one ABC and yields one ordered event stream:
 
 ```
@@ -78,13 +85,22 @@ all 12 live assertions pass either way. Only latency separates them.
 So both were built and measured with identical instrumentation, one provider, same
 text, same voice, same machine:
 
-| Cartesia `sonic-3` | TTFA p50 | TTFA p95 |
+| implementation | TTFA p50 | TTFA p95 |
 |---|---|---|
-| buffered (`/tts/bytes`) | 1117 ms | 1589 ms |
-| streaming (`/tts/sse`) | **226 ms** | **311 ms** |
+| Cartesia `sonic-3`, buffered HTTP | 1117 ms | 1589 ms |
+| Cartesia `sonic-3`, streaming SSE | **226 ms** | **311 ms** |
+| ElevenLabs `flash_v2_5`, streaming WebSocket | 669 ms | 769 ms |
 
-Roughly a 5× reduction, measured at concurrency 1 over 20 runs each. Full reports,
-including hardware and raw samples, are in [bench/results/](bench/results/).
+Roughly a 5× reduction from buffering to streaming, measured at concurrency 1 over 20
+runs each. Full reports, including hardware and raw samples, are in
+[bench/results/](bench/results/).
+
+The gap between the two streaming providers is mostly transport, not synthesis: **344
+of ElevenLabs' 669 ms is WebSocket handshake**, because their protocol closes the socket
+after each utterance while Cartesia reuses a pooled HTTP connection. Their
+`/multi-stream-input` endpoint would amortize that, and is the obvious next
+optimization. This is a measurement of two specific configurations, not a verdict on
+either vendor.
 
 The point is not that the gateway streams. It is that the cost of not streaming is a
 known number rather than an assumption.

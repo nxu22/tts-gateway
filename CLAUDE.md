@@ -130,17 +130,18 @@ uv run uvicorn gateway.main:app --reload
 
 > 每完成一个阶段更新这一节。
 
-**Week 2 —— 第二家 provider(ElevenLabs),真正的考验。**
+**Week 3 —— 音频归一层(⑤)。**
 
-已完成:契约冻结;Cartesia 接入(HTTP,流式 + 非流式),`interface.py` 和
-`router.py` 一行未改;TTFA 基线已归档(非流式 p50 1117ms → 流式 p50 226ms)。
+已完成:契约冻结;Cartesia(HTTP SSE)和 ElevenLabs(WebSocket)两家接入,
+**`interface.py` 和 `router.py` 全程一行未改** —— 抽象经受住了传输层差异这一关。
+TTFA 三组数字已归档(Cartesia 非流式 1117ms / 流式 226ms / ElevenLabs 669ms)。
 
-现在的任务是 `ElevenLabsProvider`,**只考一科**:它是 WebSocket,Cartesia 是
-HTTP SSE —— WebSocket 能不能塞进同一个 `async generator`。
+现在的任务是让归一层被真实数据触发。前两家都原生吐 24kHz PCM,重采样代码
+(`providers/_resample.py`,已写好并量过接缝)一次都没执行过。自托管模型原生
+22050/44100Hz,是零新依赖就能触发它的路径。
 
-用 `output_format=pcm_24000`,不碰 MP3,**不加任何新依赖**。归一层的验证放 ⑤
-(自托管模型原生 22050/44100Hz,零新依赖就能触发)。同时塞进 MP3 解码等于一场
-考试考两科,跑挂了分不清是抽象漏了还是解码器写错了。
+**加解码器(MP3/Opus)要等到真有 provider 只能吐压缩格式** —— 那时它才有明确的
+消费者。为没人走的路径加依赖,在作品集仓库里是负资产。
 
 **如果为了兼容需要改 `interface.py`,停下来说明原因,不要自己改。**
 第二家能接进去而不用改接口,才说明契约做对了。

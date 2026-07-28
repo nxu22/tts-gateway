@@ -33,8 +33,9 @@ from pathlib import Path
 
 import pytest
 
-from gateway.interface import MIN_FIRST_CHUNK_MS, AudioChunk, VoiceSpec
+from gateway.interface import MIN_FIRST_CHUNK_MS, AudioChunk, TTSProvider, VoiceSpec
 from gateway.providers.cartesia import CartesiaProvider
+from gateway.providers.elevenlabs import ElevenLabsProvider
 
 pytestmark = pytest.mark.live
 
@@ -71,7 +72,7 @@ async def _measure_ttfa_ms(provider: CartesiaProvider) -> tuple[float, float]:
     return ttfa, duration_ms
 
 
-async def _run_baseline(provider: CartesiaProvider, mode: str, slug: str) -> float:
+async def _run_baseline(provider: TTSProvider, mode: str, slug: str) -> float:
     """Warm up, take `RUNS` samples, archive the report. Returns p50 in ms."""
     try:
         # Warm up the TLS connection with a health check, not a synthesis. Otherwise
@@ -89,10 +90,10 @@ async def _run_baseline(provider: CartesiaProvider, mode: str, slug: str) -> flo
 
     quantiles = statistics.quantiles(samples, n=100, method="inclusive")
     p50, p95 = quantiles[49], quantiles[94]
-    report = _render_report(mode, samples, durations, p50, p95)
+    report = _render_report(provider.name, mode, samples, durations, p50, p95)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"{date.today():%Y-%m-%d}_cartesia_{slug}_ttfa.md"
+    out = RESULTS_DIR / f"{date.today():%Y-%m-%d}_{provider.name}_{slug}_ttfa.md"
     out.write_text(report, encoding="utf-8")
 
     print(f"\n{report}\nwrote {out}")
@@ -111,6 +112,18 @@ async def test_ttfa_baseline_non_streaming() -> None:
 
 async def test_ttfa_streaming() -> None:
     await _run_baseline(CartesiaProvider(), "streaming (SSE)", "streaming")
+
+
+async def test_ttfa_elevenlabs_streaming() -> None:
+    """Same stopwatch, different transport.
+
+    ElevenLabs opens a WebSocket per utterance, so its TTFA includes a handshake that
+    Cartesia's pooled HTTP connection avoids. That is not an artifact — the caller waits
+    for it — but the split is worth reporting, so the handshake is recorded separately.
+    """
+    provider = ElevenLabsProvider()
+    p50 = await _run_baseline(provider, "streaming (WebSocket)", "streaming")
+    print(f"last handshake: {provider.last_handshake_ms:.0f}ms of a {p50:.0f}ms p50")
 
 
 async def test_first_chunk_coalescing_cost() -> None:
@@ -185,16 +198,16 @@ async def test_first_chunk_coalescing_cost() -> None:
 
 
 def _render_report(
-    mode: str, samples: list[float], durations: list[float], p50: float, p95: float
+    provider: str, mode: str, samples: list[float], durations: list[float], p50: float, p95: float
 ) -> str:
     audio_s = statistics.mean(durations) / 1000
     rtf = [audio / (ttfa) for audio, ttfa in zip(durations, samples, strict=True)]
     return "\n".join(
         [
-            f"# Cartesia TTFA — {mode}",
+            f"# {provider} TTFA — {mode}",
             "",
             f"- date: {date.today():%Y-%m-%d}",
-            f"- provider: cartesia (`sonic-3`, raw pcm_s16le 24kHz, {mode})",
+            f"- provider: {provider} (raw pcm_s16le 24kHz, {mode})",
             f"- runs: {RUNS}",
             f"- concurrency: {CONCURRENCY}",
             f"- hardware: {_hardware_label()}",
