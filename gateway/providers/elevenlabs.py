@@ -301,8 +301,15 @@ class ElevenLabsProvider(TTSProvider):
         """Share one socket across utterances, keeping the handshake off the hot path.
 
         Each call gets its own ``context_id``; the session's reader routes messages back
-        by that id. ``flush: true`` is what actually triggers generation on this
-        endpoint — closing the context without it yields an empty stream.
+        by that id.
+
+        ``flush: true`` is what actually triggers generation on this endpoint, and that
+        is not documented anywhere obvious — it was found by trying variants. The two
+        plausible alternatives both fail *silently*: sending ``close_context`` on its own,
+        or terminating with an empty-string message (which is exactly how the
+        single-stream endpoint works), each return a well-formed ``isFinal`` message with
+        zero bytes of audio and no error of any kind. A caller that trusted the protocol
+        would ship a gateway that returns silence and reports success.
         """
         try:
             session = await self._ensure_session(voice_id)

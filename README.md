@@ -109,9 +109,20 @@ and fanning messages into per-context queues, because two callers both awaiting 
 would steal each other's audio. That took the handshake off the hot path entirely:
 **569 ms → 244 ms p50**, putting the two vendors within noise of each other.
 
-Both paths are still runnable (`persistent=False`), so the comparison can be re-measured
-rather than cited. This is a measurement of specific configurations, not a verdict on
-either vendor.
+This is a measurement of specific configurations, not a verdict on either vendor.
+
+### Every optimization keeps its slow path
+
+`buffered=True` on Cartesia, `persistent=False` on ElevenLabs — each improvement left
+the slower implementation in place behind a flag rather than deleting it. So none of the
+numbers above are archived history; every row is a controlled experiment that can be
+re-run on today's network, today's hardware, against today's vendor deployment.
+
+That matters because an archived benchmark expires quietly. A number measured on a
+different machine, or before a vendor changed their infrastructure, is not comparable to
+a number measured now — and nothing in the repository would tell you it had gone stale.
+Keeping both arms runnable turns "this is 2.3× faster" from a claim into a command you
+can execute.
 
 The point is not that the gateway streams. It is that the cost of not streaming is a
 known number rather than an assumption.
