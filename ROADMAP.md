@@ -67,11 +67,10 @@ TTFA(同一份测量代码):
 |---|---|---|
 | Cartesia 非流式 HTTP | 1117 ms | 1589 ms |
 | Cartesia 流式 SSE | **226 ms** | **311 ms** |
-| ElevenLabs 流式 WebSocket | 669 ms | 769 ms |
+| ElevenLabs 每句一条 socket | 569 ms | 603 ms |
+| ElevenLabs 持久多路复用 socket | **244 ms** | **293 ms** |
 
-两家流式的差距主要是传输层不是合成:**ElevenLabs 的 669ms 里有 344ms 是握手** ——
-它每句话关一次 socket,Cartesia 复用 HTTP 连接池。他们的 `/multi-stream-input`
-能摊薄这部分,是下一个明显的优化点。
+两家流式最初差 2.5 倍,而差的**不是合成速度是连接复用策略** —— 见下面 ④.5。
 
 免费档的两个坑(都记一下,换 key 时会再遇到):
 - **library voices 免费账户不能用 API 调**。Rachel / Aria 都 402。可用的是
@@ -80,11 +79,24 @@ TTFA(同一份测量代码):
   voice 列表 —— 正好印证映射表写成字面量是对的。`check_health()` 用
   `/v1/voices/settings/default`,是这把 key 唯一有权限的便宜端点。
 
-### 已知欠账
+## ④.5 抽 ChunkAssembler + 干掉握手延迟 · ✅ 完成
 
-`cartesia.py` 和 `elevenlabs.py` 里的分片逻辑(首 chunk 合并 + 半采样余数携带 +
-seq 编号)是重复的。抽成共用的 `ChunkAssembler` 是明显的下一步,但那是重构,
-不和这场考试混在一起。
+**抽 `ChunkAssembler`**(`providers/_framing.py`):首 chunk 合并、半采样余数携带、
+seq 编号 —— 这三样不是碰巧相似,是契约强制每家做的同一件事,所以抽出来是把规格
+落地而不是投机性抽象。只抽了字面上完全相同的部分;传输、错误映射、非流式切片
+路径都留在各自文件里。9 条单元测试 + 两家 live 全过,诊断数字一模一样。
+
+**干掉握手**:ElevenLabs 改用 `/multi-stream-input`,一条 socket 上用 `context_id`
+跑多个上下文。需要一个后台 reader 独占 socket、按 contextId 分发到各自队列 ——
+两个调用方同时 `recv()` 会互相偷音频。
+
+`p50 569ms → 244ms`,和 Cartesia 的 226ms 进入同一量级。
+
+协议上的坑:`flush: true` 才是这个端点的触发信号。只发 `close_context`(或空串)
+上下文会直接空掉,返回 `isFinal` 但一个字节音频都没有。
+
+`persistent=False` 保留了旧路径,理由和 Cartesia 的 `buffered=True` 一样 ——
+对比要能随时重跑,不能只剩一个归档数字。
 
 ### 顺带产出:流式重采样器
 

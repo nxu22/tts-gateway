@@ -114,16 +114,23 @@ async def test_ttfa_streaming() -> None:
     await _run_baseline(CartesiaProvider(), "streaming (SSE)", "streaming")
 
 
-async def test_ttfa_elevenlabs_streaming() -> None:
-    """Same stopwatch, different transport.
+async def test_ttfa_elevenlabs_per_utterance() -> None:
+    """A fresh WebSocket per utterance: every caller pays the handshake.
 
-    ElevenLabs opens a WebSocket per utterance, so its TTFA includes a handshake that
-    Cartesia's pooled HTTP connection avoids. That is not an artifact — the caller waits
-    for it — but the split is worth reporting, so the handshake is recorded separately.
+    This is what the transport costs before any connection management, and it is kept
+    runnable so the improvement below is a live comparison rather than an archived
+    claim.
     """
+    provider = ElevenLabsProvider(persistent=False)
+    p50 = await _run_baseline(provider, "socket per utterance", "per-utterance")
+    print(f"handshake on the last run: {provider.last_handshake_ms:.0f}ms of a {p50:.0f}ms p50")
+
+
+async def test_ttfa_elevenlabs_persistent() -> None:
+    """One multiplexed socket across utterances: the handshake is paid once."""
     provider = ElevenLabsProvider()
-    p50 = await _run_baseline(provider, "streaming (WebSocket)", "streaming")
-    print(f"last handshake: {provider.last_handshake_ms:.0f}ms of a {p50:.0f}ms p50")
+    p50 = await _run_baseline(provider, "persistent multiplexed socket", "persistent")
+    print(f"handshake on the last run: {provider.last_handshake_ms:.0f}ms of a {p50:.0f}ms p50")
 
 
 async def test_first_chunk_coalescing_cost() -> None:

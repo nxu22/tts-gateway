@@ -89,17 +89,28 @@ text, same voice, same machine:
 |---|---|---|
 | Cartesia `sonic-3`, buffered HTTP | 1117 ms | 1589 ms |
 | Cartesia `sonic-3`, streaming SSE | **226 ms** | **311 ms** |
-| ElevenLabs `flash_v2_5`, streaming WebSocket | 669 ms | 769 ms |
+| ElevenLabs `flash_v2_5`, socket per utterance | 569 ms | 603 ms |
+| ElevenLabs `flash_v2_5`, persistent multiplexed socket | **244 ms** | **293 ms** |
 
 Roughly a 5× reduction from buffering to streaming, measured at concurrency 1 over 20
 runs each. Full reports, including hardware and raw samples, are in
 [bench/results/](bench/results/).
 
-The gap between the two streaming providers is mostly transport, not synthesis: **344
-of ElevenLabs' 669 ms is WebSocket handshake**, because their protocol closes the socket
-after each utterance while Cartesia reuses a pooled HTTP connection. Their
-`/multi-stream-input` endpoint would amortize that, and is the obvious next
-optimization. This is a measurement of two specific configurations, not a verdict on
+### Where the second improvement came from
+
+ElevenLabs initially measured 2.5× slower than Cartesia, and the interesting part was
+the attribution: it was not synthesis speed. Their protocol closes the WebSocket after
+each utterance, so every caller paid a fresh handshake — **265–344 ms of it, measured
+separately** — while Cartesia reuses a pooled HTTP connection.
+
+Their `/multi-stream-input` endpoint tags messages with a context id, so one socket can
+carry concurrent utterances. Moving to it means a background reader owning the socket
+and fanning messages into per-context queues, because two callers both awaiting `recv()`
+would steal each other's audio. That took the handshake off the hot path entirely:
+**569 ms → 244 ms p50**, putting the two vendors within noise of each other.
+
+Both paths are still runnable (`persistent=False`), so the comparison can be re-measured
+rather than cited. This is a measurement of specific configurations, not a verdict on
 either vendor.
 
 The point is not that the gateway streams. It is that the cost of not streaming is a

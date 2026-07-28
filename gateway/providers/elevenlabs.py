@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
+import uuid
 from collections.abc import AsyncIterator
 
 import httpx
@@ -50,6 +52,9 @@ from gateway.interface import (
 from gateway.providers._framing import ChunkAssembler
 
 _WS_BASE = "wss://api.elevenlabs.io/v1/text-to-speech"
+#: Seconds the vendor keeps an idle socket alive. 180 is their documented maximum, and
+#: the persistent session leans on it to keep the handshake off the critical path.
+_INACTIVITY_TIMEOUT_S = 180
 _HTTP_BASE = "https://api.elevenlabs.io"
 #: ElevenLabs' lowest-latency model, the fair counterpart to Cartesia's sonic-3.
 _DEFAULT_MODEL = "eleven_flash_v2_5"
@@ -72,6 +77,66 @@ _VOICE_IDS = {
 _VOICE_SETTINGS = {"stability": 0.5, "similarity_boost": 0.8}
 
 
+class _MultiplexedSession:
+    """One long-lived WebSocket carrying several utterances at once.
+
+    ElevenLabs' ``/multi-stream-input`` endpoint tags every message with a
+    ``contextId``, so a single socket can serve concurrent syntheses. That requires one
+    reader: if two `synthesize` calls both awaited ``socket.recv()`` they would steal
+    each other's audio. So a background task owns the socket and fans messages out into
+    per-context queues.
+
+    The point of all this is latency. A socket opened per utterance charges every caller
+    a ~340ms handshake; here it is paid once and amortized.
+    """
+
+    def __init__(self, socket) -> None:
+        self._socket = socket
+        self._queues: dict[str, asyncio.Queue] = {}
+        self._reader = asyncio.create_task(self._pump())
+        self.failure: Exception | None = None
+
+    @property
+    def alive(self) -> bool:
+        return self.failure is None and not self._reader.done()
+
+    def register(self, context_id: str) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue()
+        self._queues[context_id] = queue
+        return queue
+
+    def unregister(self, context_id: str) -> None:
+        self._queues.pop(context_id, None)
+
+    async def send(self, message: dict) -> None:
+        await self._socket.send(json.dumps(message))
+
+    async def _pump(self) -> None:
+        """Route every inbound message to the context that asked for it."""
+        try:
+            async for raw in self._socket:
+                message = json.loads(raw)
+                queue = self._queues.get(message.get("contextId"))
+                if queue is not None:
+                    queue.put_nowait(message)
+        except Exception as exc:
+            # Deliberately broad: whatever killed the socket has to reach every context
+            # waiting on it, rather than vanishing inside a background task.
+            self.failure = exc
+        finally:
+            if self.failure is None:
+                self.failure = ConnectionError("socket closed")
+            # Wake everyone still waiting; each decides whether it is a truncation.
+            for queue in self._queues.values():
+                queue.put_nowait(None)
+
+    async def aclose(self) -> None:
+        self._reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await self._reader
+        await self._socket.close()
+
+
 class ElevenLabsProvider(TTSProvider):
     """ElevenLabs TTS over WebSocket.
 
@@ -79,6 +144,10 @@ class ElevenLabsProvider(TTSProvider):
         api_key: Defaults to ``ELEVENLABS_API_KEY``.
         model: ElevenLabs model id.
         timeout_s: Applied to connection setup and to waiting for each message.
+        persistent: Reuse one multiplexed socket across utterances, so the handshake is
+            paid once instead of per request. Set to False for the original
+            socket-per-utterance behaviour, which is kept so the before/after comparison
+            can be re-run rather than resting on an archived number.
     """
 
     name = "elevenlabs"
@@ -89,6 +158,7 @@ class ElevenLabsProvider(TTSProvider):
         api_key: str | None = None,
         model: str = _DEFAULT_MODEL,
         timeout_s: float = 30.0,
+        persistent: bool = True,
     ) -> None:
         key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
         if not key:
@@ -96,13 +166,20 @@ class ElevenLabsProvider(TTSProvider):
         self._api_key = key
         self._model = model
         self._timeout_s = timeout_s
+        self._persistent = persistent
         self._http = httpx.AsyncClient(
             base_url=_HTTP_BASE, timeout=10.0, headers={"xi-api-key": key}
         )
+        self._session: _MultiplexedSession | None = None
+        self._session_lock = asyncio.Lock()
         #: Diagnostics, concurrency-1 only: how much of TTFA went to the handshake.
+        #: 0.0 on a persistent session that was already warm — which is the point.
         self.last_handshake_ms: float | None = None
 
     async def aclose(self) -> None:
+        if self._session is not None:
+            await self._session.aclose()
+            self._session = None
         await self._http.aclose()
 
     def _resolve_voice(self, voice: VoiceSpec) -> str:
@@ -114,11 +191,13 @@ class ElevenLabsProvider(TTSProvider):
                 provider=self.name,
             ) from None
 
-    def _url(self, voice_id: str) -> str:
-        return (
-            f"{_WS_BASE}/{voice_id}/stream-input"
+    def _url(self, voice_id: str, *, multi: bool = False) -> str:
+        endpoint = "multi-stream-input" if multi else "stream-input"
+        url = (
+            f"{_WS_BASE}/{voice_id}/{endpoint}"
             f"?model_id={self._model}&output_format=pcm_{SAMPLE_RATE}"
         )
+        return f"{url}&inactivity_timeout={_INACTIVITY_TIMEOUT_S}" if multi else url
 
     async def synthesize(self, text: str, voice: VoiceSpec) -> AsyncIterator:
         if not text.strip():
@@ -129,6 +208,16 @@ class ElevenLabsProvider(TTSProvider):
             )
         voice_id = self._resolve_voice(voice)
 
+        if self._persistent:
+            async for event in self._synthesize_persistent(text, voice_id):
+                yield event
+            return
+
+        async for event in self._synthesize_per_utterance(text, voice_id):
+            yield event
+
+    async def _synthesize_per_utterance(self, text: str, voice_id: str) -> AsyncIterator:
+        """One socket per utterance: every caller pays the handshake. The baseline."""
         loop = asyncio.get_running_loop()
         t_connect = loop.time()
         assembler = ChunkAssembler()
@@ -186,13 +275,102 @@ class ElevenLabsProvider(TTSProvider):
 
         yield StreamEnded(total_samples=assembler.total_samples)
 
-    def _decode_message(self, raw: str | bytes) -> tuple[bytes, bool]:
-        """Return (pcm, is_final) for one WebSocket message."""
+    async def _ensure_session(self, voice_id: str) -> _MultiplexedSession:
+        """Return a live multiplexed session, opening or replacing one if needed."""
+        async with self._session_lock:
+            if self._session is not None and self._session.alive:
+                self.last_handshake_ms = 0.0
+                return self._session
+            if self._session is not None:
+                await self._session.aclose()
+
+            loop = asyncio.get_running_loop()
+            t_connect = loop.time()
+            socket = await connect(
+                self._url(voice_id, multi=True),
+                additional_headers={"xi-api-key": self._api_key},
+                open_timeout=self._timeout_s,
+                close_timeout=5,
+                max_size=None,
+            )
+            self.last_handshake_ms = (loop.time() - t_connect) * 1000
+            self._session = _MultiplexedSession(socket)
+            return self._session
+
+    async def _synthesize_persistent(self, text: str, voice_id: str) -> AsyncIterator:
+        """Share one socket across utterances, keeping the handshake off the hot path.
+
+        Each call gets its own ``context_id``; the session's reader routes messages back
+        by that id. ``flush: true`` is what actually triggers generation on this
+        endpoint — closing the context without it yields an empty stream.
+        """
         try:
-            message = json.loads(raw)
+            session = await self._ensure_session(voice_id)
+        except websockets.exceptions.InvalidStatus as exc:
+            raise self._connect_error(exc) from exc
+        except (TimeoutError, OSError, websockets.exceptions.WebSocketException) as exc:
+            raise ProviderUnavailable(f"connection failed: {exc}", provider=self.name) from exc
+
+        context_id = f"ctx-{uuid.uuid4().hex[:12]}"
+        queue = session.register(context_id)
+        assembler = ChunkAssembler()
+        started = False
+
+        try:
+            await session.send(
+                {"text": " ", "voice_settings": _VOICE_SETTINGS, "context_id": context_id}
+            )
+            await session.send({"text": text, "context_id": context_id, "flush": True})
+            await session.send({"context_id": context_id, "close_context": True})
+
+            yield StreamStarted(provider=self.name, voice_resolved=voice_id)
+            started = True
+
+            while True:
+                message = await asyncio.wait_for(queue.get(), timeout=self._timeout_s)
+                if message is None:
+                    # The reader stopped; the socket died under us mid-utterance.
+                    raise StreamInterrupted(
+                        f"session ended mid-stream: {session.failure}", provider=self.name
+                    )
+                audio, final = self._decode_payload(message)
+                if audio:
+                    chunk = assembler.push(audio)
+                    if chunk is not None:
+                        yield chunk
+                if final:
+                    break
+        except TimeoutError as exc:
+            raise StreamInterrupted(
+                f"no audio within {self._timeout_s}s", provider=self.name
+            ) from exc
+        except websockets.exceptions.ConnectionClosed as exc:
+            if started:
+                raise StreamInterrupted(
+                    f"socket closed mid-stream: {exc}", provider=self.name
+                ) from exc
+            raise ProviderUnavailable(f"socket closed: {exc}", provider=self.name) from exc
+        finally:
+            session.unregister(context_id)
+
+        tail = assembler.flush()
+        if tail is not None:
+            yield tail
+
+        if assembler.total_samples == 0:
+            raise StreamInterrupted("provider returned no audio", provider=self.name)
+
+        yield StreamEnded(total_samples=assembler.total_samples)
+
+    def _decode_message(self, raw: str | bytes) -> tuple[bytes, bool]:
+        """Return (pcm, is_final) for one raw WebSocket frame."""
+        try:
+            return self._decode_payload(json.loads(raw))
         except json.JSONDecodeError as exc:
             raise StreamInterrupted(f"malformed message: {exc}", provider=self.name) from exc
 
+    def _decode_payload(self, message: dict) -> tuple[bytes, bool]:
+        """Return (pcm, is_final) for an already-parsed message."""
         if message.get("error") or message.get("code") in {"invalid_api_key", "quota_exceeded"}:
             raise StreamInterrupted(
                 f"provider error mid-stream: {message.get('message') or message}",
