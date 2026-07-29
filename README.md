@@ -44,6 +44,25 @@ has already reached the caller, so the same state machine is not reimplemented p
 vendor. And `StreamEnded` is the only marker of a normal end of stream, so its absence
 is what identifies a truncation.
 
+A third follows from the first: `StreamStarted` is withheld until the first chunk is in
+hand, then emitted immediately before it. A provider that announces a live stream and
+then dies has still delivered nothing, so the caller is never told it existed — and the
+`StreamStarted.provider` they do see is always whoever actually delivered.
+
+All of it is driven by fault injection against `FakeProvider`, which has failure points
+built in for this purpose: fail before the first chunk, fail at chunk N, fail with a
+chosen error type. No network, no credits, and the failure lands exactly where the test
+wants it.
+
+Those tests are themselves mutation-checked — the router is deliberately broken four
+ways (state 2 switches instead of raising, the silence pad removed, the dev-only guard
+removed, `StreamStarted` forwarded eagerly) to confirm the right test catches each. That
+check earned its keep immediately: the test named for state 2 did not catch state 2. It
+had injected `StreamInterrupted`, which is non-retryable, so the error type alone
+prevented the switch and the branch under test could be deleted entirely without the
+test noticing. Injecting a *retryable* error mid-stream is what actually pins the rule:
+the boundary is whether audio has reached the caller, not which exception was raised.
+
 ## Contract tests, and tests for the tests
 
 `tests/test_contract.py` is parametrized: every provider runs the same assertions.

@@ -130,15 +130,14 @@ uv run uvicorn gateway.main:app --reload
 
 > 每完成一个阶段更新这一节。
 
-**Week 3 —— 音频归一层(⑤)。**
+**Week 4 —— 遥测(⑥)/ eval harness(⑦),自托管(⑤)看时间。**
 
-已完成:契约冻结;Cartesia(HTTP SSE)和 ElevenLabs(WebSocket)两家接入,
-**`interface.py` 和 `router.py` 全程一行未改** —— 抽象经受住了传输层差异这一关。
-TTFA 三组数字已归档(Cartesia 非流式 1117ms / 流式 226ms / ElevenLabs 669ms)。
+已完成:契约冻结;两家 provider 接入(HTTP SSE + WebSocket),`interface.py` 全程
+未改;ElevenLabs 握手优化(569→244ms);router + failover 三态 + 故障注入测试。
 
-现在的任务是让归一层被真实数据触发。前两家都原生吐 24kHz PCM,重采样代码
-(`providers/_resample.py`,已写好并量过接缝)一次都没执行过。自托管模型原生
-22050/44100Hz,是零新依赖就能触发它的路径。
+延迟数字目前活在测试里的两个 `perf_counter` 里 —— ⑥ 把它搬进 `telemetry.py`
+才是生产形态。⑤ 归一层的真实验证挂在自托管模型上(原生 22050/44100Hz),
+那是唯一有环境风险的一步,有时间再碰。
 
 **加解码器(MP3/Opus)要等到真有 provider 只能吐压缩格式** —— 那时它才有明确的
 消费者。为没人走的路径加依赖,在作品集仓库里是负资产。

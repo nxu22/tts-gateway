@@ -109,8 +109,15 @@ async def test_mid_stream_failure_does_not_switch() -> None:
     Audio is already playing at the caller. Switching vendors now changes the speaker
     mid-sentence, which is worse than an honest truncation: a truncated turn can be
     retried, a voice swap cannot be un-heard.
+
+    The injected error is deliberately **retryable**. An earlier version of this test
+    injected `StreamInterrupted`, which is non-retryable — so it passed even with the
+    router's entire mid-stream branch deleted, because the error type alone prevented the
+    switch. It was testing the exception taxonomy, not the bookkeeping. Mutation testing
+    caught that; a retryable error is what actually exercises "audio has been sent, so
+    stop regardless".
     """
-    primary = _NamedFake("primary", fail_at_chunk=3)
+    primary = _NamedFake("primary", fail_at_chunk=3, fail_at_chunk_error=ProviderUnavailable("x"))
     backup = _NamedFake("backup")
     router = Router([primary, backup])
 
@@ -124,6 +131,21 @@ async def test_mid_stream_failure_does_not_switch() -> None:
         "StreamEnded marks a normal end; emitting it here would hide the truncation"
     )
     assert [e.provider for e in events if isinstance(e, StreamStarted)] == ["primary"]
+
+
+async def test_retryable_error_before_audio_still_switches() -> None:
+    """The mirror image: the same error type, but before any audio, does fail over.
+
+    Together with the test above this pins the actual rule — the boundary is whether a
+    chunk has reached the caller, not which exception was raised.
+    """
+    primary = _NamedFake("primary", fail_before_first_chunk=ProviderUnavailable("x"))
+    backup = _NamedFake("backup")
+
+    events = await collect(Router([primary, backup]))
+
+    assert backup.calls == 1
+    assert isinstance(events[-1], StreamEnded)
 
 
 async def test_mid_stream_failure_pads_silence() -> None:

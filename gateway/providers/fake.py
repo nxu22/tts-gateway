@@ -65,9 +65,11 @@ class FakeProvider(TTSProvider):
         fail_before_first_chunk: Raise this after `StreamStarted` but before any audio.
             The injection point for failover state 1 (silent switch).
         fail_on_start: Raise before even `StreamStarted` is emitted.
-        fail_at_chunk: Raise `StreamInterrupted` when about to emit chunk N. Only N > 0
-            counts as mid-stream. The injection point for failover state 2 (no switch,
-            pad with silence).
+        fail_at_chunk: Fail when about to emit chunk N. Only N > 0 counts as mid-stream.
+            The injection point for failover state 2 (no switch, pad with silence).
+        fail_at_chunk_error: What `fail_at_chunk` raises; `StreamInterrupted` by default.
+            Set a *retryable* error here to test that it is the "audio already sent"
+            bookkeeping, not the error type, that stops the router switching mid-stream.
         health: What `check_health()` returns.
         cheat_first_chunk: Fake a TTFA land-grab; the contract tests must catch it.
             ``"empty"`` emits no bytes, ``"silent"`` emits all zeros, ``"short"`` emits
@@ -89,6 +91,7 @@ class FakeProvider(TTSProvider):
         fail_before_first_chunk: TTSError | None = None,
         fail_on_start: TTSError | None = None,
         fail_at_chunk: int | None = None,
+        fail_at_chunk_error: TTSError | None = None,
         health: HealthStatus = HealthStatus.HEALTHY,
         cheat_first_chunk: str | None = None,
         cheat_end_on_error: bool = False,
@@ -100,6 +103,7 @@ class FakeProvider(TTSProvider):
         self.fail_before_first_chunk = fail_before_first_chunk
         self.fail_on_start = fail_on_start
         self.fail_at_chunk = fail_at_chunk
+        self.fail_at_chunk_error = fail_at_chunk_error
         self.health = health
         self.cheat_first_chunk = cheat_first_chunk
         self.cheat_end_on_error = cheat_end_on_error
@@ -139,7 +143,9 @@ class FakeProvider(TTSProvider):
                 if self.fail_at_chunk is not None and seq == self.fail_at_chunk:
                     if self.cheat_end_on_error:
                         yield StreamEnded(total_samples=emitted)
-                    raise StreamInterrupted(f"injected failure at chunk {seq}", provider=self.name)
+                    raise self.fail_at_chunk_error or StreamInterrupted(
+                        f"injected failure at chunk {seq}", provider=self.name
+                    )
                 if seq > 0 and self.chunk_delay_ms:
                     await asyncio.sleep(self.chunk_delay_ms / 1000)
 

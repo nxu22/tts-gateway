@@ -141,17 +141,31 @@ MP3 解码等于一场考试考两科,跑挂了分不清是抽象漏了还是解
 `eval/intelligibility.py`(TTS → ASR → WER)、`naturalness.py`(UTMOS / NISQA)、
 `latency.py`(p50 / p95)、`report.py` → `bench/results/`。
 
-## ⑧ router + failover 🧭
+## ⑧ router + failover 🧭 · ✅ 完成
 
-选路 + failover 状态机 + 故障注入测试。三态语义见 CLAUDE.md,不要"优化"掉
-「中途不切换」这条。
+`gateway/router.py` + `tests/test_router.py`(22 条,全部 FakeProvider 故障注入,
+不烧额度)。三态都落地了,②时记的那笔账(非 dev 环境 pool 里出现 `fake` 就启动
+报错)也一起还了。
 
-必做的两道防护:
+`StreamStarted` 改成**扣留到首个 chunk 到手才发** —— 这样 router 自己的输出仍然
+符合契约(恰好一个、在音频之前),而静默切换仍然可能:一个宣布了流却没产出音频的
+provider,调用方从来不知道它存在过。而且调用方看到的 `StreamStarted.provider`
+永远是真正交付的那家。
 
-- **启动校验**:非 dev 环境(`APP_ENV != "dev"`)下 pool 里出现 `fake` 就报错退出。
-  它能被 `TTS_PROVIDER_POOL` 路由到,总有一天会被误配到线上,然后客户听到正弦波。
-- **熔断靠被动信号**:最近 N 次真实请求的失败率,不是定时探测。`check_health()`
-  只用在半开恢复上。
+`providers/__init__.py` 现在有 `REGISTRY`,"新建一个文件 + 注册一行"是字面意义上的。
+
+### mutation testing 抓到一条装饰性测试
+
+把 router 故意改坏四种(三态第二态改成切换、去掉补静音、去掉启动校验、
+`StreamStarted` 立即转发),确认每种都被对应的测试抓住。
+
+结果第一条**不是**被那条以它命名的测试抓住的。`test_mid_stream_failure_does_not_switch`
+注入的是 `StreamInterrupted`,而它 `retryable=False` —— 光靠异常分类就阻止了切换,
+所以把 router 里整个 `emitted` 分支删掉,那条测试照样绿。它测的是异常分类,不是
+记账逻辑。
+
+改成注入**可重试**的 `ProviderUnavailable` 才真正钉住规则:**停止切换的是"音频已经
+交出去了",不是异常类型。** 另加一条镜像测试(同样的异常、在音频之前 → 确实切换)。
 
 ## ⑨ normalize/
 
